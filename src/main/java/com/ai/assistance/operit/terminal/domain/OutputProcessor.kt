@@ -240,6 +240,9 @@ class OutputProcessor(
                 session.copy(initState = SessionInitState.READY)
             }
             
+            // 将首个提示符写入 ANSI 解析器，确保画布立即显示
+            sessionManager.getSession(sessionId)?.ansiParser?.parse(line)
+            
             // 发送欢迎语到 Canvas
             sendWelcomeMessage(sessionId, sessionManager)
         }
