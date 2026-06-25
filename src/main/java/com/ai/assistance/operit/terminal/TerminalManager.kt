@@ -115,19 +115,6 @@ class TerminalManager private constructor(
         private const val MAX_OUTPUT_LINES_PER_ITEM = 1000
     }
 
-    init {
-        // 在初始化时异步创建默认session
-        coroutineScope.launch {
-            try {
-                Log.d(TAG, "Creating default session...")
-                createNewSession("default")
-                Log.d(TAG, "Default session created successfully")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to create default session", e)
-            }
-        }
-    }
-
     /**
      * 创建新会话 - 同步等待初始化完成
      */
@@ -655,6 +642,7 @@ class TerminalManager private constructor(
             mv ${'$'}UBUNTU_PATH/${'$'}UBUNTU_NAME/* ${'$'}UBUNTU_PATH/ 2>/dev/null
             rm -rf ${'$'}UBUNTU_PATH/${'$'}UBUNTU_NAME
             echo 'export ANDROID_DATA=/home/' >> ${'$'}UBUNTU_PATH/root/.bashrc
+            echo 'export PS1="root@localhost:~# "' >> ${'$'}UBUNTU_PATH/root/.bashrc
           else
             VERSION=`cat ${'$'}UBUNTU_PATH/etc/issue.net 2>/dev/null`
             progress_echo "Ubuntu ${'$'}L_INSTALLED -> ${'$'}VERSION"
