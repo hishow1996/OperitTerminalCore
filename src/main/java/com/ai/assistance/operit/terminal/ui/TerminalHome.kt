@@ -1,4 +1,4 @@
-package com.ai.assistance.operit.terminal.ui
+﻿package com.ai.assistance.operit.terminal.ui
 
 import android.content.Context
 import android.os.Build
@@ -150,14 +150,20 @@ fun TerminalHome(
     val padding = basePadding * scaleFactor
 
     // 获取当前 session 的 PTY
-    val currentPty = remember(env.currentSessionId, env.sessions) {
-        env.sessions.find { it.id == env.currentSessionId }?.pty
+    val currentSession = remember(env.currentSessionId, env.sessions) {
+        env.sessions.find { it.id == env.currentSessionId }
     }
+    val currentPty = currentSession?.pty
+    val isCurrentSessionInitializing = currentSession?.isInitializing != false
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+    ) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
     ) {
         // 会话标签页
         SessionTabBar(
@@ -400,6 +406,31 @@ fun TerminalHome(
             textContentColor = Color.Gray
         )
     }
+    } // end Column
+
+    // 初始化遮罩：会话未就绪时覆盖终端区域，避免闪现未清理的原始输出
+    if (isCurrentSessionInitializing) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(color = Color.White)
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Initializing...",
+                    color = Color.White,
+                    fontSize = 16.sp
+                )
+            }
+        }
+    }
+    } // end Box
 }
 
 private fun getTruncatedPrompt(prompt: String, maxLength: Int = 16): String {
