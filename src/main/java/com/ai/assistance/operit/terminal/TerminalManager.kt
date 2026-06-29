@@ -235,9 +235,14 @@ class TerminalManager private constructor(
 
         session.commandMutex.withLock {
             if (session.currentExecutingCommand?.isExecuting == true) {
-                // 有命令正在执行，将新命令加入队列
-                session.commandQueue.add(QueuedCommand(actualCommandId, command))
-                Log.d(TAG, "Command queued: $command (id: $actualCommandId). Queue size: ${session.commandQueue.size}")
+                // 有命令正在执行（如TUI程序：vim、top、kimchi等），直接将输入发送到PTY
+                Log.d(TAG, "Command executing, sending as input to PTY: $command")
+                try {
+                    session.sessionWriter?.write(command + "\n")
+                    session.sessionWriter?.flush()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending input to PTY", e)
+                }
             } else {
                 // 没有命令在执行，直接执行
                 executeCommandInternal(command, session, actualCommandId)
@@ -267,9 +272,14 @@ class TerminalManager private constructor(
 
         session.commandMutex.withLock {
             if (session.currentExecutingCommand?.isExecuting == true) {
-                // 有命令正在执行，将新命令加入队列
-                session.commandQueue.add(QueuedCommand(actualCommandId, command))
-                Log.d(TAG, "Command queued for session $sessionId: $command (id: $actualCommandId). Queue size: ${session.commandQueue.size}")
+                // 有命令正在执行（如TUI程序），直接将输入发送到PTY
+                Log.d(TAG, "Command executing in session $sessionId, sending as input to PTY: $command")
+                try {
+                    session.sessionWriter?.write(command + "\n")
+                    session.sessionWriter?.flush()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending input to session $sessionId", e)
+                }
             } else {
                 // 没有命令在执行，直接执行
                 executeCommandInternal(command, session, actualCommandId)
