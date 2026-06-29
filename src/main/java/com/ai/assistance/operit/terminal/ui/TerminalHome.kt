@@ -1,5 +1,6 @@
-package com.ai.assistance.operit.terminal.ui
+﻿package com.ai.assistance.operit.terminal.ui
 
+import android.content.Context
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
@@ -35,6 +36,10 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -48,6 +53,7 @@ import com.ai.assistance.operit.terminal.data.TerminalSessionData
 import com.ai.assistance.operit.terminal.view.canvas.CanvasTerminalOutput
 import com.ai.assistance.operit.terminal.view.canvas.CanvasTerminalScreen
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
@@ -62,6 +68,11 @@ import com.ai.assistance.operit.terminal.view.SyntaxHighlightingVisualTransforma
 import com.ai.assistance.operit.terminal.view.highlight
 import androidx.compose.material.icons.filled.Settings
 import com.ai.assistance.operit.terminal.view.canvas.CanvasTerminalScreen
+import com.ai.assistance.operit.terminal.view.canvas.RenderConfig
+import com.ai.assistance.operit.terminal.utils.TerminalFontConfigManager
+import android.graphics.Typeface
+import android.view.inputmethod.InputMethodManager
+import java.io.File
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
@@ -70,8 +81,49 @@ fun TerminalHome(
     onNavigateToSetup: () -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
+    val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val rootView = LocalView.current
+    val fontConfigManager = remember { TerminalFontConfigManager.getInstance(context) }
+    
+    // 字体配置状态
+    var fontConfig by remember { 
+        mutableStateOf(fontConfigManager.loadRenderConfig())
+    }
+    
+    // 监听字体配置变化（当从设置界面返回时）
+    LaunchedEffect(Unit) {
+        // 每次进入时重新读取配置
+        fontConfig = fontConfigManager.loadRenderConfig()
+    }
+    
+    // 当组件重新组合时，检查配置是否变化并更新
+    DisposableEffect(Unit) {
+        val newConfig = fontConfigManager.loadRenderConfig()
+        
+        if (fontConfig != newConfig) {
+            fontConfig = newConfig
+        }
+        
+        onDispose { }
+    }
+    
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+
+    // 命令输入框焦点控制
+    val inputFocusRequester = remember { FocusRequester() }
+    var pendingShowIme by remember { mutableStateOf(false) }
+
+    LaunchedEffect(pendingShowIme) {
+        if (pendingShowIme) {
+            pendingShowIme = false
+            // 模仿全屏模式，在焦点切换后稍微延迟再请求输入法
+            delay(100)
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.showSoftInput(rootView, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
 
     // 语法高亮
     val visualTransformation = remember { SyntaxHighlightingVisualTransformation() }
@@ -82,6 +134,10 @@ fun TerminalHome(
     // 删除确认弹窗状态
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var sessionToDelete by remember { mutableStateOf<String?>(null) }
+    
+    // 非全屏模式下虚拟键盘显示状态
+    var showVirtualKeyboard by remember { mutableStateOf(false) }
+    var isDirectInputMode by remember { mutableStateOf(false) }
 
     // 计算基于缩放因子的字体大小和间距
     val baseFontSize = 14.sp
@@ -125,8 +181,12 @@ fun TerminalHome(
                 CanvasTerminalScreen(
                     emulator = env.terminalEmulator,
                     modifier = Modifier.weight(1f),
+                    config = fontConfig,
                     pty = currentPty,
-                    onInput = { env.onSendInput(it, false) }
+                    onInput = { env.onSendInput(it, false) },
+                    sessionId = env.currentSessionId,
+                    onScrollOffsetChanged = { id, offset -> env.saveScrollOffset(id, offset) },
+                    getScrollOffset = { id -> env.getScrollOffset(id) }
                 )
                 
                 // 虚拟键盘 - 会随 imePadding 一起上移
@@ -137,13 +197,46 @@ fun TerminalHome(
                 )
             }
         } else {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = if (isDirectInputMode) {
+                    // 模式 A：非全屏直接发送模式，跟随 IME 自动调整可见区域
+                    Modifier
+                        .fillMaxSize()
+                        .imePadding()
+                } else {
+                    // 模式 B：普通输入框模式，不使用 imePadding 策略
+                    Modifier.fillMaxSize()
+                }
+            ) {
                 // Canvas输出区域（占满剩余空间）
-                CanvasTerminalOutput(
-                    emulator = env.terminalEmulator,
-                    modifier = Modifier.weight(1f),
-                    pty = currentPty
-                )
+                if (isDirectInputMode) {
+                    // 直接输入模式：使用与全屏相同的 CanvasTerminalScreen，点击画布时由 CanvasTerminalView 自己弹出输入法
+                    CanvasTerminalScreen(
+                        emulator = env.terminalEmulator,
+                        modifier = Modifier.weight(1f),
+                        config = fontConfig,
+                        pty = currentPty,
+                        onInput = { env.onSendInput(it, false) },
+                        sessionId = env.currentSessionId,
+                        onScrollOffsetChanged = { id, offset -> env.saveScrollOffset(id, offset) },
+                        getScrollOffset = { id -> env.getScrollOffset(id) }
+                    )
+                } else {
+                    // 普通命令模式：只显示输出，点击画布时把焦点切到命令输入框并弹出输入法
+                    CanvasTerminalOutput(
+                        emulator = env.terminalEmulator,
+                        modifier = Modifier.weight(1f),
+                        config = fontConfig,
+                        pty = currentPty,
+                        onRequestShowKeyboard = {
+                            inputFocusRequester.requestFocus()
+                            pendingShowIme = true
+                        },
+                        sessionId = env.currentSessionId,
+                        onScrollOffsetChanged = { id, offset -> env.saveScrollOffset(id, offset) },
+                        getScrollOffset = { id -> env.getScrollOffset(id) }
+                    )
+                }
                 
                 // 终端工具栏
                 TerminalToolbar(
@@ -178,7 +271,10 @@ fun TerminalHome(
                     BasicTextField(
                         value = env.command,
                         onValueChange = env::onCommandChange,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(inputFocusRequester),
+                        enabled = !isDirectInputMode,
                         textStyle = TextStyle(
                             color = SyntaxColors.commandDefault,
                             fontFamily = FontFamily.Monospace,
@@ -190,6 +286,58 @@ fun TerminalHome(
                         keyboardActions = KeyboardActions(onSend = {
                             env.onSendInput(env.command, true)
                         })
+                    )
+                    // 虚拟键盘切换按钮
+                    Surface(
+                        modifier = Modifier
+                            .padding(start = padding * 0.5f)
+                            .clickable { showVirtualKeyboard = !showVirtualKeyboard },
+                        color = if (showVirtualKeyboard) Color(0xFF4A4A4A) else Color(0xFF3A3A3A),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "⌨",
+                            color = Color.White,
+                            fontFamily = FontFamily.Default,
+                            fontSize = fontSize * 1.2f,
+                            modifier = Modifier.padding(horizontal = padding * 0.75f, vertical = padding * 0.4f)
+                        )
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .padding(start = padding * 0.5f)
+                            .clickable {
+                                isDirectInputMode = !isDirectInputMode
+                                if (isDirectInputMode) {
+                                    // 进入直接输入模式：展开虚拟键盘，清空命令并收起系统键盘
+                                    showVirtualKeyboard = true
+                                    env.onCommandChange("")
+                                    keyboardController?.hide()
+                                } else {
+                                    // 退出直接输入模式：关闭虚拟键盘面板并恢复系统键盘
+                                    showVirtualKeyboard = false
+                                    keyboardController?.show()
+                                }
+                            },
+                        color = if (isDirectInputMode) Color(0xFF4A4A4A) else Color(0xFF3A3A3A),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "⇄",
+                            color = Color.White,
+                            fontFamily = FontFamily.Default,
+                            fontSize = fontSize * 1.1f,
+                            modifier = Modifier.padding(horizontal = padding * 0.75f, vertical = padding * 0.4f)
+                        )
+                    }
+                }
+                
+                // 虚拟键盘（当显示时）
+                if (showVirtualKeyboard) {
+                    VirtualKeyboard(
+                        onKeyPress = { key -> env.onSendInput(key, false) },
+                        fontSize = fontSize * 0.7f,
+                        padding = padding * 0.5f
                     )
                 }
             }

@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.ai.assistance.operit.terminal.TerminalManager
 import com.ai.assistance.operit.terminal.data.PackageManagerType
 import com.ai.assistance.operit.terminal.utils.SourceManager
+import com.ai.assistance.operit.terminal.utils.SSHConfigManager
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +65,14 @@ fun SetupScreen(
 ) {
     val context = LocalContext.current
     val sourceManager = remember { SourceManager(context) }
+    val sshConfigManager = remember { SSHConfigManager(context) }
+    
+    // 检查SSH是否启用
+    var isSSHEnabled by remember { mutableStateOf(false) }
+    
+    LaunchedEffect(Unit) {
+        isSSHEnabled = sshConfigManager.isEnabled()
+    }
     
     val packageCategories by remember {
         derivedStateOf {
@@ -89,11 +98,22 @@ fun SetupScreen(
                     )
                 ),
                 PackageCategory(
+                    id = "ssh",
+                    name = context.getString(com.ai.assistance.operit.terminal.R.string.category_ssh_name),
+                    description = context.getString(com.ai.assistance.operit.terminal.R.string.category_ssh_desc),
+                    packages = listOf(
+                        PackageItem("ssh", context.getString(com.ai.assistance.operit.terminal.R.string.package_ssh_client_name), "ssh", context.getString(com.ai.assistance.operit.terminal.R.string.package_ssh_client_desc)),
+                        PackageItem("sshpass", context.getString(com.ai.assistance.operit.terminal.R.string.package_sshpass_name), "sshpass", context.getString(com.ai.assistance.operit.terminal.R.string.package_sshpass_desc)),
+                        PackageItem("openssh-server", "OpenSSH 服务器", "openssh-server", "用于反向隧道挂载本地文件系统")
+                    )
+                ),
+                PackageCategory(
                     id = "java", 
                     name = context.getString(com.ai.assistance.operit.terminal.R.string.category_java_name),
                     description = context.getString(com.ai.assistance.operit.terminal.R.string.category_java_desc),
                     packages = listOf(
-                        PackageItem("openjdk-17", context.getString(com.ai.assistance.operit.terminal.R.string.package_openjdk_name), "openjdk-17-jdk", context.getString(com.ai.assistance.operit.terminal.R.string.package_openjdk_desc))
+                        PackageItem("openjdk-17", context.getString(com.ai.assistance.operit.terminal.R.string.package_openjdk_name), "openjdk-17-jdk", context.getString(com.ai.assistance.operit.terminal.R.string.package_openjdk_desc)),
+                        PackageItem("gradle", context.getString(com.ai.assistance.operit.terminal.R.string.package_gradle_name), "gradle", context.getString(com.ai.assistance.operit.terminal.R.string.package_gradle_desc))
                     )
                 ),
                 PackageCategory(
@@ -145,9 +165,14 @@ fun SetupScreen(
 
         onDispose {
             job.cancel()
-            checkSessionId?.let {
-                Log.d("SetupScreen", "Closing check session $it")
-                terminalManager.closeSession(it)
+            checkSessionId?.let { sid ->
+                val state = terminalManager.terminalState.value
+                val otherSession = state.sessions.firstOrNull { it.id != sid }
+                if (otherSession != null && state.currentSessionId == sid) {
+                    terminalManager.switchToSession(otherSession.id)
+                }
+                Log.d("SetupScreen", "Closing check session $sid")
+                terminalManager.closeSession(sid)
             }
         }
     }
@@ -200,9 +225,14 @@ fun SetupScreen(
                         showSetupDialog = false
                         // 在开始设置前，显式关闭检查会话
                         checkSessionId?.let { sid ->
+                            val state = terminalManager.terminalState.value
+                            val otherSession = state.sessions.firstOrNull { it.id != sid }
+                            if (otherSession != null && state.currentSessionId == sid) {
+                                terminalManager.switchToSession(otherSession.id)
+                            }
                             Log.d("SetupScreen", "Closing check session $sid before starting setup.")
                             terminalManager.closeSession(sid)
-                            checkSessionId = null // 防止 onDispose 重复关闭
+                            checkSessionId = null
                         }
                         onSetup(commandsToRun.value)
                     },
@@ -244,8 +274,49 @@ fun SetupScreen(
             text = context.getString(com.ai.assistance.operit.terminal.R.string.setup_subtitle),
             color = Color.Gray,
             fontSize = 14.sp,
-            modifier = Modifier.padding(bottom = 24.dp)
+            modifier = Modifier.padding(bottom = 16.dp)
         )
+        
+        // SSH模式警告横幅
+        if (isSSHEnabled) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFFFA500).copy(alpha = 0.2f)
+                ),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "⚠️",
+                        fontSize = 20.sp,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "SSH 模式警告",
+                            color = Color(0xFFFFA500),
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "本页面在 SSH 模式下检测不准确，请自行手动配置 pnpm 和 python。",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+        }
 
         // 包分类列表
         LazyColumn(
@@ -582,8 +653,12 @@ private suspend fun checkPackageInstalled(
         "rust" -> "command -v rustc"
         "uv" -> "command -v uv"
         "nodejs" -> "node -v 2>/dev/null"
-        "pnpm" -> "test -f \"$(npm prefix -g)/bin/pnpm\" && echo FOUND_PNPM"
+        "pnpm" -> "test -f \"\$(npm prefix -g)/bin/pnpm\" && echo FOUND_PNPM"
         "go" -> "command -v go"
+        "ssh" -> "command -v ssh"
+        "sshpass" -> "command -v sshpass"
+        "openssh-server" -> "command -v sshd"
+        "gradle" -> "command -v gradle"
         else -> "dpkg -s ${pkg.command.split(" ").first()}"
     }
 
@@ -598,7 +673,7 @@ private suspend fun checkPackageInstalled(
             val majorVersion = versionMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
             majorVersion >= 24
         }
-        "rust", "uv", "go" -> output.isNotBlank() && !output.contains("not found")
+        "rust", "uv", "go", "ssh", "sshpass", "openssh-server", "gradle" -> output.isNotBlank() && !output.contains("not found")
         "pnpm" -> output.contains("FOUND_PNPM")
         else -> output.contains("Status: install ok installed")
     }
@@ -631,8 +706,7 @@ private suspend fun executeCommandAndGetOutput(
     }
 
     collectorReady.await()
-    terminalManager.switchToSession(sessionId)
-    terminalManager.sendCommand(command, commandId)
+    terminalManager.sendCommandToSession(sessionId, command, commandId)
 
     val result = withTimeoutOrNull(15000L) { // 15s timeout
         deferred.await()

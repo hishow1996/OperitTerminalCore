@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import com.ai.assistance.operit.terminal.data.TerminalSessionData
 import kotlinx.coroutines.launch
 import android.util.Log
+import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiTerminalEmulator
 
 @Stable
 class TerminalEnv(
@@ -18,7 +19,7 @@ class TerminalEnv(
     currentSessionIdState: State<String?>,
     currentDirectoryState: State<String>,
     isFullscreenState: State<Boolean>,
-    terminalEmulatorState: State<com.ai.assistance.operit.terminal.domain.ansi.AnsiTerminalEmulator>,
+    terminalEmulatorState: State<AnsiTerminalEmulator>,
     private val terminalManager: TerminalManager,
     val forceShowSetup: Boolean = false
 ) {
@@ -71,6 +72,9 @@ class TerminalEnv(
     }
     fun onSwitchSession(sessionId: String) = terminalManager.switchToSession(sessionId)
     fun onCloseSession(sessionId: String) = terminalManager.closeSession(sessionId)
+    
+    fun saveScrollOffset(sessionId: String, scrollOffset: Float) = terminalManager.saveScrollOffset(sessionId, scrollOffset)
+    fun getScrollOffset(sessionId: String): Float = terminalManager.getScrollOffset(sessionId)
 }
 
 @Composable
@@ -79,7 +83,8 @@ fun rememberTerminalEnv(terminalManager: TerminalManager, forceShowSetup: Boolea
     val currentSessionIdState = terminalManager.currentSessionId.collectAsState(initial = null)
     val currentDirectoryState = terminalManager.currentDirectory.collectAsState(initial = "$ ")
     val isFullscreenState = terminalManager.isFullscreen.collectAsState(initial = false)
-    val terminalEmulatorState = terminalManager.terminalEmulator.collectAsState(initial = com.ai.assistance.operit.terminal.domain.ansi.AnsiTerminalEmulator())
+    val placeholderEmulator = remember { AnsiTerminalEmulator(screenWidth = 1, screenHeight = 1, historySize = 0) }
+    val terminalEmulatorState = terminalManager.terminalEmulator.collectAsState(initial = placeholderEmulator)
 
     return remember(terminalManager, forceShowSetup) {
         TerminalEnv(

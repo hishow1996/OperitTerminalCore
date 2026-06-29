@@ -1,29 +1,17 @@
 package com.ai.assistance.operit.terminal
 
 import android.content.Context
-import android.os.Build
 import android.util.Log
-import androidx.annotation.RequiresApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
-import java.util.zip.ZipInputStream
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import java.util.zip.ZipEntry
-import java.io.BufferedInputStream
-import java.io.FileInputStream
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -31,21 +19,28 @@ import kotlinx.coroutines.flow.map
 import com.ai.assistance.operit.terminal.data.TerminalState
 import com.ai.assistance.operit.terminal.data.CommandHistoryItem
 import com.ai.assistance.operit.terminal.data.QueuedCommand
-import com.ai.assistance.operit.terminal.domain.SessionManager
-import com.ai.assistance.operit.terminal.domain.OutputProcessor
+import com.ai.assistance.operit.terminal.view.domain.OutputProcessor
 import java.util.UUID
-import java.io.OutputStreamWriter
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withLock
 import com.ai.assistance.operit.terminal.data.PackageManagerType
+import com.ai.assistance.operit.terminal.data.SessionInitState
 import com.ai.assistance.operit.terminal.utils.SourceManager
+import com.ai.assistance.operit.terminal.utils.SSHConfigManager
+import com.ai.assistance.operit.terminal.utils.SSHDServerManager
+import com.ai.assistance.operit.terminal.provider.filesystem.FileSystemProvider
+import com.ai.assistance.operit.terminal.provider.filesystem.LocalFileSystemProvider
+import com.ai.assistance.operit.terminal.provider.type.TerminalProvider
+import com.ai.assistance.operit.terminal.provider.type.TerminalType
+import com.ai.assistance.operit.terminal.provider.type.LocalTerminalProvider
+import com.ai.assistance.operit.terminal.provider.type.SSHTerminalProvider
+import com.ai.assistance.operit.terminal.data.TerminalSessionData
+import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiTerminalEmulator
 
-@RequiresApi(Build.VERSION_CODES.O)
 class TerminalManager private constructor(
     private val context: Context
 ) {
@@ -58,6 +53,9 @@ class TerminalManager private constructor(
     private val binDir: File = File(usrDir, "bin")
     private val nativeLibDir: String = context.applicationInfo.nativeLibraryDir
     private val activeSessions = ConcurrentHashMap<String, TerminalSession>()
+    
+    // SharedPreferences for reading settings
+    private val prefs = context.getSharedPreferences("terminal_settings", Context.MODE_PRIVATE)
 
     // 核心组件
     private val sessionManager = SessionManager(this)
@@ -79,6 +77,12 @@ class TerminalManager private constructor(
         }
     )
     private val sourceManager = SourceManager(context)
+    private val sshConfigManager = SSHConfigManager(context)
+    private val sshdServerManager = SSHDServerManager.getInstance(context)
+    
+    // 单例的 TerminalProvider
+    private var terminalProvider: TerminalProvider? = null
+    private val providerMutex = Mutex()
 
     // 状态和事件流
     private val _commandExecutionEvents = MutableSharedFlow<CommandExecutionEvent>()
@@ -97,7 +101,7 @@ class TerminalManager private constructor(
     val isInteractiveMode = terminalState.map { it.currentSession?.isInteractiveMode ?: false }
     val interactivePrompt = terminalState.map { it.currentSession?.interactivePrompt ?: "" }
     val isFullscreen = terminalState.map { it.currentSession?.isFullscreen ?: false }
-    val terminalEmulator = terminalState.map { it.currentSession?.ansiParser ?: com.ai.assistance.operit.terminal.domain.ansi.AnsiTerminalEmulator() }
+    val terminalEmulator = terminalState.map { it.currentSession?.ansiParser ?: AnsiTerminalEmulator() }
 
     companion object {
         @Volatile
@@ -115,14 +119,30 @@ class TerminalManager private constructor(
         private const val MAX_OUTPUT_LINES_PER_ITEM = 1000
     }
 
+
+
+
+
     /**
      * 创建新会话 - 同步等待初始化完成
+     * 自动检测终端类型：如果配置了SSH则使用SSH，否则使用本地终端
+     * 
+     * @param title 会话标题
      */
-    suspend fun createNewSession(title: String? = null): com.ai.assistance.operit.terminal.data.TerminalSessionData {
-        val newSession = sessionManager.createNewSession(title)
+    suspend fun createNewSession(
+        title: String? = null
+    ): TerminalSessionData {
+        // 自动检测终端类型
+        val terminalType = if (sshConfigManager.getConfig() != null && sshConfigManager.isEnabled()) {
+            TerminalType.SSH
+        } else {
+            TerminalType.LOCAL
+        }
+        
+        val newSession = sessionManager.createNewSession(title, terminalType)
 
         // 异步初始化会话
-        val initJob = coroutineScope.launch {
+        coroutineScope.launch {
             initializeSession(newSession.id)
         }
 
@@ -158,8 +178,21 @@ class TerminalManager private constructor(
     fun closeSession(sessionId: String) {
         sessionManager.closeSession(sessionId)
     }
+    
+    /**
+     * 保存会话的滚动位置
+     */
+    fun saveScrollOffset(sessionId: String, scrollOffset: Float) {
+        sessionManager.saveScrollOffset(sessionId, scrollOffset)
+    }
+    
+    /**
+     * 获取会话的滚动位置
+     */
+    fun getScrollOffset(sessionId: String): Float {
+        return sessionManager.getScrollOffset(sessionId)
+    }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun createBusyboxSymlinks() {
         val links = listOf(
             "awk", "ash", "basename", "bzip2", "curl", "cp", "chmod", "cut", "cat", "du", "dd",
@@ -193,18 +226,25 @@ class TerminalManager private constructor(
         val actualCommandId = commandId ?: UUID.randomUUID().toString()
         val session = sessionManager.getCurrentSession() ?: return actualCommandId
 
-        // 如果会话在交互模式，直接发送输入（不创建命令历史）
-        if (session.isInteractiveMode) {
-            Log.d(TAG, "Session in interactive mode, sending as input: $command")
+        // Allow input during initialization (e.g. password prompt) or interactive mode
+        val isInitializing = session.initState != SessionInitState.READY
+        
+        if (session.isInteractiveMode || isInitializing) {
+            Log.d(TAG, "Session in interactive mode or initializing, sending as input: $command")
             sendInput(command + "\n")
             return actualCommandId
         }
 
         session.commandMutex.withLock {
             if (session.currentExecutingCommand?.isExecuting == true) {
-                // 有命令正在执行，将新命令加入队列
-                session.commandQueue.add(QueuedCommand(actualCommandId, command))
-                Log.d(TAG, "Command queued: $command (id: $actualCommandId). Queue size: ${session.commandQueue.size}")
+                // 有命令正在执行（如TUI程序：vim、top、kimchi等），直接将输入发送到PTY
+                Log.d(TAG, "Command executing, sending as input to PTY: $command")
+                try {
+                    session.sessionWriter?.write(command + "\n")
+                    session.sessionWriter?.flush()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending input to PTY", e)
+                }
             } else {
                 // 没有命令在执行，直接执行
                 executeCommandInternal(command, session, actualCommandId)
@@ -234,9 +274,14 @@ class TerminalManager private constructor(
 
         session.commandMutex.withLock {
             if (session.currentExecutingCommand?.isExecuting == true) {
-                // 有命令正在执行，将新命令加入队列
-                session.commandQueue.add(QueuedCommand(actualCommandId, command))
-                Log.d(TAG, "Command queued for session $sessionId: $command (id: $actualCommandId). Queue size: ${session.commandQueue.size}")
+                // 有命令正在执行（如TUI程序），直接将输入发送到PTY
+                Log.d(TAG, "Command executing in session $sessionId, sending as input to PTY: $command")
+                try {
+                    session.sessionWriter?.write(command + "\n")
+                    session.sessionWriter?.flush()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending input to session $sessionId", e)
+                }
             } else {
                 // 没有命令在执行，直接执行
                 executeCommandInternal(command, session, actualCommandId)
@@ -268,7 +313,7 @@ class TerminalManager private constructor(
     /**
      * 内部执行命令的函数, 必须在 commandMutex 锁内部调用
      */
-    private suspend fun executeCommandInternal(command: String, session: com.ai.assistance.operit.terminal.data.TerminalSessionData, commandId: String) {
+    private suspend fun executeCommandInternal(command: String, session: TerminalSessionData, commandId: String) {
         if (command.trim() == "clear") {
             try {
                 session.sessionWriter?.write("clear\n")
@@ -337,7 +382,6 @@ class TerminalManager private constructor(
             val success = initializeEnvironment()
             if (success) {
                 startSession(sessionId)
-            } else {
             }
         }
     }
@@ -345,12 +389,15 @@ class TerminalManager private constructor(
     private fun startSession(sessionId: String) {
         coroutineScope.launch(Dispatchers.IO) {
             try {
-                val (terminalSession, pty) = startTerminalSession(sessionId)
-                val sessionWriter = terminalSession.stdin.writer()
+                Log.d(TAG, "Starting session...")
 
-                // 发送初始命令来获取提示符
-                sessionWriter.write("echo 'TERMINAL_READY'\n")
-                sessionWriter.flush()
+                // 获取单例的终端提供者
+                val provider = getTerminalProvider()
+
+                // 启动终端会话
+                val result = provider.startSession(sessionId)
+                val (terminalSession, pty) = result.getOrThrow()
+                val sessionWriter = terminalSession.stdin.writer()
 
                 // 启动读取协程
                 val readJob = launch {
@@ -385,8 +432,28 @@ class TerminalManager private constructor(
             }
         }
     }
+    
+    /**
+     * 获取或创建单例的终端提供者
+     */
+    private suspend fun getTerminalProvider(): TerminalProvider {
+        providerMutex.withLock {
+            if (terminalProvider == null) {
+                val sshConfig = sshConfigManager.getConfig()
+                val provider = if (sshConfig != null && sshConfigManager.isEnabled()) {
+                    Log.d(TAG, "Creating singleton SSH terminal provider")
+                    SSHTerminalProvider(context, sshConfig, this)
+                } else {
+                    Log.d(TAG, "Creating singleton local terminal provider")
+                    LocalTerminalProvider(context)
+                }
+                provider.connect().getOrThrow()
+                terminalProvider = provider
+            }
+        }
+        return terminalProvider!!
+    }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     suspend fun initializeEnvironment(): Boolean {
         if (isEnvInitialized) return true
 
@@ -412,7 +479,7 @@ class TerminalManager private constructor(
 
                     // 4. Generate and write startup script
                     val startScript = generateStartScript()
-                    File(filesDir, "common.sh").writeText(startScript)
+                    File(filesDir, "common.sh").writeText(startScript.replace("\r\n", "\n").replace("\r", "\n"))
 
 
                     Log.d(TAG, "Environment initialization completed successfully.")
@@ -442,7 +509,6 @@ class TerminalManager private constructor(
         File(filesDir, "tmp").mkdirs()
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun linkNativeLibs() {
         Log.d(TAG, "Linking native libraries from: $nativeLibDir")
 
@@ -542,7 +608,6 @@ class TerminalManager private constructor(
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
     @Throws(IOException::class)
     private fun createSymbolicLink(target: File, linkName: String, linkDir: File, force: Boolean) {
         val linkFile = File(linkDir, linkName)
@@ -563,14 +628,31 @@ class TerminalManager private constructor(
     private fun extractAssets() {
         try {
             val assets = listOf(
-                UBUNTU_FILENAME
+                UBUNTU_FILENAME,
+                "setup_fake_sysdata.sh"
             )
             assets.forEach { assetName ->
                 val assetFile = File(filesDir, assetName)
-                if (!assetFile.exists()) {
-                    context.assets.open(assetName).use { input ->
-                        assetFile.outputStream().use { output ->
-                            input.copyTo(output)
+                // 强制更新脚本文件，大文件只在不存在时提取
+                val shouldExtract = !assetFile.exists() || assetName == "setup_fake_sysdata.sh"
+
+                if (shouldExtract) {
+                    if (assetName.endsWith(".sh")) {
+                        context.assets.open(assetName).use { input ->
+                            val raw = input.readBytes()
+                            val text = raw.toString(Charsets.UTF_8)
+                            val normalized =
+                                text
+                                    .removePrefix("\uFEFF")
+                                    .replace("\r\n", "\n")
+                                    .replace("\r", "\n")
+                            assetFile.writeText(normalized, Charsets.UTF_8)
+                        }
+                    } else {
+                        context.assets.open(assetName).use { input ->
+                            assetFile.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
                         }
                     }
                     Log.d(TAG, "Extracted $assetName")
@@ -631,25 +713,109 @@ class TerminalManager private constructor(
 
         val installUbuntu = """
         install_ubuntu(){
-          mkdir -p ${'$'}UBUNTU_PATH 2>/dev/null
-          if [ -z "${'$'}(ls -A ${'$'}UBUNTU_PATH)" ]; then
-            progress_echo "Ubuntu ${'$'}L_NOT_INSTALLED, ${'$'}L_INSTALLING..."
-            ls ~/${'$'}UBUNTU
-            progress_echo "Extracting Ubuntu rootfs..."
-            busybox tar xf ~/${'$'}UBUNTU -C ${'$'}UBUNTU_PATH/ >/dev/null 2>&1
-            rm -f ~/${'$'}UBUNTU
-            echo "Extraction complete"
-            mv ${'$'}UBUNTU_PATH/${'$'}UBUNTU_NAME/* ${'$'}UBUNTU_PATH/ 2>/dev/null
-            rm -rf ${'$'}UBUNTU_PATH/${'$'}UBUNTU_NAME
-            echo 'export ANDROID_DATA=/home/' >> ${'$'}UBUNTU_PATH/root/.bashrc
-          else
+          OK_FILE="${'$'}UBUNTU_PATH/.operit_installed_ok"
+          LOCK_DIR="${'$'}UBUNTU_PATH.install.lock"
+          LOCK_PID_FILE="${'$'}LOCK_DIR/pid"
+          TMP_DIR="${'$'}UBUNTU_PATH.install.tmp"
+
+          UBUNTU_PARENT="${'$'}{UBUNTU_PATH%/*}"
+          mkdir -p "${'$'}UBUNTU_PARENT" 2>/dev/null
+
+          attempt=0
+          while true; do
+            if mkdir "${'$'}LOCK_DIR" 2>/dev/null; then
+              echo "${'$'}${'$'}" > "${'$'}LOCK_PID_FILE" 2>/dev/null || true
+              break
+            fi
+
+            if [ -f "${'$'}LOCK_PID_FILE" ]; then
+              lock_pid=${'$'}(cat "${'$'}LOCK_PID_FILE" 2>/dev/null)
+              if [ -z "${'$'}lock_pid" ]; then
+                if [ "${'$'}attempt" -gt 2 ]; then
+                  rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+                  continue
+                fi
+              elif ! kill -0 "${'$'}lock_pid" 2>/dev/null; then
+                rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+                continue
+              fi
+            else
+              if [ "${'$'}attempt" -gt 2 ]; then
+                rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+                continue
+              fi
+            fi
+
+            attempt=${'$'}((attempt + 1))
+            if [ "${'$'}attempt" -gt 120 ]; then
+              progress_echo "Ubuntu install lock timeout"
+              return 1
+            fi
+            sleep 1
+          done
+
+          cleanup_install(){
+            rm -rf "${'$'}TMP_DIR" 2>/dev/null
+            rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+          }
+          trap 'cleanup_install' EXIT INT TERM
+
+          if [ -f "${'$'}OK_FILE" ]; then
             VERSION=`cat ${'$'}UBUNTU_PATH/etc/issue.net 2>/dev/null`
             progress_echo "Ubuntu ${'$'}L_INSTALLED -> ${'$'}VERSION"
+          else
+            if [ -f "${'$'}UBUNTU_PATH/etc/issue.net" ]; then
+              echo "ok" > "${'$'}OK_FILE" 2>/dev/null || true
+              VERSION=`cat ${'$'}UBUNTU_PATH/etc/issue.net 2>/dev/null`
+              progress_echo "Ubuntu ${'$'}L_INSTALLED -> ${'$'}VERSION"
+            else
+              progress_echo "Ubuntu ${'$'}L_NOT_INSTALLED, ${'$'}L_INSTALLING..."
+              if [ ! -f "${'$'}HOME/${'$'}UBUNTU" ]; then
+                cleanup_install
+                trap - EXIT INT TERM
+                return 1
+              fi
+              rm -rf "${'$'}TMP_DIR" 2>/dev/null
+              mkdir -p "${'$'}TMP_DIR" 2>/dev/null
+              progress_echo "Extracting Ubuntu rootfs..."
+              busybox tar xf "${'$'}HOME/${'$'}UBUNTU" -C "${'$'}TMP_DIR"/ >/dev/null 2>&1
+              if [ ${'$'}? -ne 0 ]; then
+                cleanup_install
+                trap - EXIT INT TERM
+                return 1
+              fi
+              echo "Extraction complete"
+              if [ -d "${'$'}TMP_DIR/${'$'}UBUNTU_NAME" ]; then
+                mv "${'$'}TMP_DIR/${'$'}UBUNTU_NAME"/* "${'$'}TMP_DIR"/ 2>/dev/null
+                rm -rf "${'$'}TMP_DIR/${'$'}UBUNTU_NAME" 2>/dev/null
+              fi
+
+              mkdir -p "${'$'}TMP_DIR/root" 2>/dev/null
+              echo 'export ANDROID_DATA=/home/' >> "${'$'}TMP_DIR/root/.bashrc"
+              echo 'export PS1="root@localhost:~# "' >> "${'$'}TMP_DIR/root/.bashrc"
+              mkdir -p "${'$'}TMP_DIR/etc" 2>/dev/null
+              echo 'nameserver 8.8.8.8' > "${'$'}TMP_DIR/etc/resolv.conf"
+              echo "ok" > "${'$'}TMP_DIR/.operit_installed_ok" 2>/dev/null || true
+
+              rm -rf "${'$'}UBUNTU_PATH" 2>/dev/null
+              mv "${'$'}TMP_DIR" "${'$'}UBUNTU_PATH" 2>/dev/null
+              if [ ${'$'}? -ne 0 ]; then
+                cleanup_install
+                trap - EXIT INT TERM
+                return 1
+              fi
+              rm -f "${'$'}HOME/${'$'}UBUNTU" 2>/dev/null
+            fi
           fi
+
+          mkdir -p ${'$'}UBUNTU_PATH/etc 2>/dev/null
           echo 'nameserver 8.8.8.8' > ${'$'}UBUNTU_PATH/etc/resolv.conf
+
+          rm -rf "${'$'}LOCK_DIR" 2>/dev/null
+          trap - EXIT INT TERM
         }
         """.trimIndent()
-        
+
         val configureSources = """
         configure_sources(){
           # 配置APT源
@@ -674,13 +840,61 @@ class TerminalManager private constructor(
         }
         """.trimIndent()
 
+        val fixPermissions = """
+        fix_permissions(){
+          echo "Fixing permissions..."
+          # Fix "cannot find name for group ID" warnings
+          # Append Android groups to Ubuntu /etc/group
+          current_groups=$(id -G)
+          for gid in ${'$'}current_groups; do
+            if ! grep -q ":${'$'}gid:" ${'$'}UBUNTU_PATH/etc/group; then
+              echo "android_group_${'$'}gid:x:${'$'}gid:" >> ${'$'}UBUNTU_PATH/etc/group
+            fi
+          done
+          echo "Permissions fixed."
+        }
+        """.trimIndent()
+
+        // 读取共享tmp设置
+        val sharedTmpEnabled = prefs.getBoolean("shared_tmp_enabled", true)
+        val tmpBindingLine = if (sharedTmpEnabled) {
+            """-b "${'$'}TMPDIR":/dev/shm \"""
+        } else {
+            ""
+        }
+        
         val loginUbuntu = """
         login_ubuntu(){
+          COMMAND_TO_EXEC="$1"
+          if [ -z "${'$'}COMMAND_TO_EXEC" ]; then
+            COMMAND_TO_EXEC="/bin/bash -il"
+          fi
+
+          # Setup fake sysdata
+          export INSTALLED_ROOTFS_DIR=$(dirname "${'$'}UBUNTU_PATH")
+          export distro_name=$(basename "${'$'}UBUNTU_PATH")
+          
+          if [ -f "${'$'}HOME/setup_fake_sysdata.sh" ]; then
+              source "${'$'}HOME/setup_fake_sysdata.sh"
+              setup_fake_sysdata
+          fi
+
+          # Prepare extra bindings for missing proc files
+          PROOT_EXTRA_BINDINGS=""
+          if [ ! -e /proc/stat ]; then PROOT_EXTRA_BINDINGS="${'$'}PROOT_EXTRA_BINDINGS -b ${'$'}UBUNTU_PATH/proc/.stat:/proc/stat"; fi
+          if [ ! -e /proc/loadavg ]; then PROOT_EXTRA_BINDINGS="${'$'}PROOT_EXTRA_BINDINGS -b ${'$'}UBUNTU_PATH/proc/.loadavg:/proc/loadavg"; fi
+          if [ ! -e /proc/uptime ]; then PROOT_EXTRA_BINDINGS="${'$'}PROOT_EXTRA_BINDINGS -b ${'$'}UBUNTU_PATH/proc/.uptime:/proc/uptime"; fi
+          if [ ! -e /proc/version ]; then PROOT_EXTRA_BINDINGS="${'$'}PROOT_EXTRA_BINDINGS -b ${'$'}UBUNTU_PATH/proc/.version:/proc/version"; fi
+          if [ ! -e /proc/vmstat ]; then PROOT_EXTRA_BINDINGS="${'$'}PROOT_EXTRA_BINDINGS -b ${'$'}UBUNTU_PATH/proc/.vmstat:/proc/vmstat"; fi
+          if [ ! -e /proc/sys/kernel/cap_last_cap ]; then PROOT_EXTRA_BINDINGS="${'$'}PROOT_EXTRA_BINDINGS -b ${'$'}UBUNTU_PATH/proc/.sysctl_entry_cap_last_cap:/proc/sys/kernel/cap_last_cap"; fi
+          if [ ! -e /proc/sys/fs/inotify/max_user_watches ]; then PROOT_EXTRA_BINDINGS="${'$'}PROOT_EXTRA_BINDINGS -b ${'$'}UBUNTU_PATH/proc/.sysctl_inotify_max_user_watches:/proc/sys/fs/inotify/max_user_watches"; fi
+
           # 使用 proot 直接进入解压的 Ubuntu 根文件系统。
           # - 清理并设置 PATH，避免继承宿主 PATH 造成命令找不到或混用 busybox。
           # - 绑定常见伪文件系统与外部存储，保障交互和软件包管理工作正常。
-          # 在 proot 环境中创建 /storage/emulated 目录
+          # 在 proot 环境中创建必要的目录
           mkdir -p "${'$'}UBUNTU_PATH/storage/emulated" 2>/dev/null
+          mkdir -p "${'$'}UBUNTU_PATH$homeDir" 2>/dev/null
           exec ${'$'}BIN/proot \
             -0 \
             -r "${'$'}UBUNTU_PATH" \
@@ -689,20 +903,38 @@ class TerminalManager private constructor(
             -b /proc \
             -b /sys \
             -b /dev/pts \
-            -b "${'$'}TMPDIR":/dev/shm \
+            $tmpBindingLine
             -b /proc/self/fd:/dev/fd \
             -b /proc/self/fd/0:/dev/stdin \
             -b /proc/self/fd/1:/dev/stdout \
             -b /proc/self/fd/2:/dev/stderr \
             -b /storage/emulated/0:/sdcard \
             -b /storage/emulated/0:/storage/emulated/0 \
+            -b $homeDir:$homeDir \
+            ${'$'}PROOT_EXTRA_BINDINGS \
             -w /root \
             /usr/bin/env -i \
               HOME=/root \
               TERM=xterm-256color \
               LANG=en_US.UTF-8 \
               PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-              /bin/bash -lc "echo LOGIN_SUCCESSFUL; echo TERMINAL_READY; exec /bin/bash -il"
+              COMMAND_TO_EXEC="${'$'}COMMAND_TO_EXEC" \
+              /bin/bash -lc 'echo LOGIN_SUCCESSFUL; echo TERMINAL_READY; eval "${'$'}COMMAND_TO_EXEC"'
+        }
+        """.trimIndent()
+
+        val sshShell = """
+        ssh_shell(){
+          set -x
+          install_ubuntu
+          configure_sources
+          fix_permissions
+          sleep 1
+          bump_progress
+          
+          # 先进入Ubuntu环境，然后连接SSH
+          # 当SSH退出时，用户会回到本地Ubuntu shell
+          login_ubuntu 'echo "Connecting to SSH..."; '"${'$'}SSH_COMMAND"'; echo "SSH connection closed. You are now in local Ubuntu terminal."; /bin/bash -il'
         }
         """.trimIndent()
 
@@ -710,11 +942,14 @@ class TerminalManager private constructor(
         $common
         $installUbuntu
         $configureSources
+        $fixPermissions
         $loginUbuntu
+        $sshShell
         clear_lines
         start_shell(){
           install_ubuntu
           configure_sources
+          fix_permissions
           sleep 1
           bump_progress
           login_ubuntu
@@ -722,39 +957,16 @@ class TerminalManager private constructor(
         """.trimIndent()
     }
 
-    fun startTerminalSession(sessionId: String): Pair<TerminalSession, Pty> {
-        val bash = File(binDir, "bash").absolutePath
-        val startScript = "source \$HOME/common.sh && start_shell"
-
-        val command = arrayOf(bash, "-c", startScript)
-
-        val env = mutableMapOf<String, String>()
-        env["PATH"] = "${binDir.absolutePath}:${System.getenv("PATH")}"
-        env["HOME"] = filesDir.absolutePath
-        env["PREFIX"] = usrDir.absolutePath
-        env["TERMUX_PREFIX"] = usrDir.absolutePath
-        env["LD_LIBRARY_PATH"] = "${nativeLibDir}:${binDir.absolutePath}"
-        env["PROOT_LOADER"] = File(binDir, "loader").absolutePath
-        env["TMPDIR"] = File(filesDir, "tmp").absolutePath
-        env["PROOT_TMP_DIR"] = File(filesDir, "tmp").absolutePath
-        env["TERM"] = "xterm-256color"
-        env["LANG"] = "en_US.UTF-8"
-
-        Log.d(TAG, "Starting terminal session with command: ${command.joinToString(" ")}")
-        Log.d(TAG, "Environment: $env")
-
-        val pty = Pty.start(command, env, filesDir)
-
-        val session = TerminalSession(
-            process = pty.process,
-            stdout = pty.stdout,
-            stdin = pty.stdin
-        )
-        activeSessions[sessionId] = session
-        return Pair(session, pty)
-    }
-
     fun closeTerminalSession(sessionId: String) {
+        // Delegate to provider to ensure underlying process is killed
+        coroutineScope.launch {
+            try {
+                terminalProvider?.closeSession(sessionId)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing session via provider", e)
+            }
+        }
+
         activeSessions[sessionId]?.let { session ->
             session.process.destroy()
             activeSessions.remove(sessionId)
@@ -789,6 +1001,17 @@ class TerminalManager private constructor(
     }
 
     fun cleanup() {
+        // 释放 provider 连接
+        kotlinx.coroutines.runBlocking {
+            terminalProvider?.disconnect()
+            Log.d(TAG, "Disconnected terminal provider")
+            
+            // 停止SSHD服务器
+            sshdServerManager.stopServer()
+            Log.d(TAG, "Stopped SSHD server")
+        }
+        terminalProvider = null
+        
         activeSessions.keys.forEach { sessionId ->
             closeTerminalSession(sessionId)
         }
@@ -796,4 +1019,22 @@ class TerminalManager private constructor(
         coroutineScope.cancel()
         Log.d(TAG, "All active sessions cleaned up.")
     }
+
+    /**
+     * 获取文件系统提供者
+     * 
+     * 根据配置返回对应的提供者（本地或SSH）
+     * 如果配置了SSH且已连接，返回SSH的文件系统提供者（共享SFTP连接）
+     * 否则返回本地文件系统提供者
+     */
+    fun getFileSystemProvider(): FileSystemProvider = kotlinx.coroutines.runBlocking {
+        getTerminalProvider().getFileSystemProvider()
+    }
+    
+    /**
+     * 获取SSHD服务器管理器
+     * 
+     * 用于管理本地SSHD服务器（反向SSH隧道场景）
+     */
+    fun getSSHDServerManager(): SSHDServerManager = sshdServerManager
 }

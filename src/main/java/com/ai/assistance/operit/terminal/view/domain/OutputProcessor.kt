@@ -1,13 +1,12 @@
-package com.ai.assistance.operit.terminal.domain
+package com.ai.assistance.operit.terminal.view.domain
 
 import android.util.Log
 import com.ai.assistance.operit.terminal.CommandExecutionEvent
 import com.ai.assistance.operit.terminal.SessionDirectoryEvent
-import com.ai.assistance.operit.terminal.data.CommandHistoryItem
+import com.ai.assistance.operit.terminal.SessionManager
 import com.ai.assistance.operit.terminal.data.SessionInitState
 import com.ai.assistance.operit.terminal.data.TerminalSessionData
-import com.ai.assistance.operit.terminal.domain.ansi.AnsiUtils
-import java.util.UUID
+import com.ai.assistance.operit.terminal.view.domain.ansi.AnsiUtils
 
 /**
  * 终端输出的会话处理状态
@@ -53,11 +52,9 @@ class OutputProcessor(
             return
         }
 
-        // 只有在 READY 状态后才更新 ANSI 解析器（用于 Canvas 渲染）
-        // 避免在初始化阶段显示登录信息和 TERMINAL_READY 标记
-        if (session.initState == SessionInitState.READY) {
-            session.ansiParser.parse(chunk)
-        }
+        // 始终更新 ANSI 解析器（用于 Canvas 渲染），包括初始化阶段
+        // 这样用户可以看到初始化过程中的所有输出，包括错误信息
+        session.ansiParser.parse(chunk)
         
         // 如果在全屏模式下，跳过行解析逻辑（全屏应用自己管理屏幕）
         if (session.isFullscreen) {
@@ -147,6 +144,16 @@ class OutputProcessor(
             processLine(sessionId, line, sessionManager)
             return
         }
+        
+        // 检查是否是命令提示符（优先级最高）
+        // 即使是 CR line，如果是提示符也应该作为命令完成处理
+        if (isPrompt(cleanLine.trim())) {
+            Log.d(TAG, "Detected prompt in CR line: '$cleanLine'")
+            handlePrompt(sessionId, cleanLine, sessionManager)
+            sessionStates[sessionId]?.justHandledCarriageReturn = false
+            return
+        }
+        
         // 只有在清理后的内容非空时才处理为进度更新
         // 空内容（如 ANSI 控制序列）不应影响下一行的处理
         if (cleanLine.isNotEmpty()) {
@@ -220,7 +227,7 @@ class OutputProcessor(
         line: String,
         sessionManager: SessionManager
     ) {
-        if (AnsiUtils.stripAnsi(line).trim() == "TERMINAL_READY") {
+        if (AnsiUtils.stripAnsi(line).contains("TERMINAL_READY")) {
             Log.d(TAG, "TERMINAL_READY marker found.")
             sessionManager.updateSession(sessionId) { session ->
                 session.copy(initState = SessionInitState.AWAITING_FIRST_PROMPT)
@@ -234,6 +241,7 @@ class OutputProcessor(
         sessionManager: SessionManager
     ) {
         val cleanLine = AnsiUtils.stripAnsi(line)
+        Log.d(TAG, "handleAwaitingFirstPromptState: checking line: '$cleanLine'")
         if (handlePrompt(sessionId, cleanLine, sessionManager)) {
             Log.d(TAG, "First prompt detected. Session is now ready.")
             sessionManager.updateSession(sessionId) { session ->
@@ -245,6 +253,11 @@ class OutputProcessor(
             
             // 发送欢迎语到 Canvas
             sendWelcomeMessage(sessionId, sessionManager)
+            
+            // 重新发送当前 prompt 行（清屏操作会清除 prompt）
+            sessionManager.getSession(sessionId)?.ansiParser?.parse(line)
+        } else {
+            Log.d(TAG, "Not a prompt, continuing to wait...")
         }
     }
 
@@ -604,12 +617,13 @@ class OutputProcessor(
 
     /**
      * 发送欢迎消息到 Canvas
+     * 在 READY 状态时清屏，然后显示欢迎消息
      */
     private fun sendWelcomeMessage(sessionId: String, sessionManager: SessionManager) {
         val session = sessionManager.getSession(sessionId) ?: return
         
         // 构建欢迎消息，包含 ANSI 控制序列
-        // \u001B[2J - 清屏
+        // \u001B[2J - 清屏（清除初始化过程中的所有输出）
         // \u001B[H - 移动光标到左上角
         // 使用 \r\n 确保正确换行（\r 回车到行首，\n 换到下一行）
         val welcomeMessage = "\u001B[2J\u001B[H" +
@@ -624,9 +638,10 @@ class OutputProcessor(
             "\r\n"
         
         // 直接发送到 ANSI 解析器（Canvas 渲染）
+        // 清屏操作会清除之前初始化过程中的所有输出
         session.ansiParser.parse(welcomeMessage)
         
-        Log.d(TAG, "Welcome message sent to Canvas for session $sessionId")
+        Log.d(TAG, "Screen cleared and welcome message sent to Canvas for session $sessionId")
     }
 
 }
