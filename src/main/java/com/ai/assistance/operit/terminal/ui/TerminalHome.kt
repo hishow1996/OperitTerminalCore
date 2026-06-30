@@ -287,12 +287,25 @@ fun TerminalHome(
                             env.onSendInput(env.command, true)
                         })
                     )
-                    // 虚拟键盘切换按钮
+                    // 系统软键盘切换按钮
                     Surface(
                         modifier = Modifier
                             .padding(start = padding * 0.5f)
-                            .clickable { showVirtualKeyboard = !showVirtualKeyboard },
-                        color = if (showVirtualKeyboard) Color(0xFF4A4A4A) else Color(0xFF3A3A3A),
+                            .clickable {
+                                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                                if (imm?.isAcceptingText == true) {
+                                    keyboardController?.hide()
+                                    imm?.hideSoftInputFromWindow(rootView.windowToken, 0)
+                                } else {
+                                    if (!isDirectInputMode) {
+                                        inputFocusRequester.requestFocus()
+                                        pendingShowIme = true
+                                    } else {
+                                        imm?.showSoftInput(rootView, InputMethodManager.SHOW_IMPLICIT)
+                                    }
+                                }
+                            },
+                        color = Color(0xFF3A3A3A),
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
