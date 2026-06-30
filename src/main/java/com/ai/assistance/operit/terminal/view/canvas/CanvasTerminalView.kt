@@ -168,6 +168,9 @@ class CanvasTerminalView @JvmOverloads constructor(
         holder.addCallback(this)
         setWillNotDraw(false)
         
+        // 确保SurfaceView在surface被销毁时显示黑色背景，而不是透明露出白色窗口背景
+        setBackgroundColor(Color.BLACK)
+        
         // 使视图可以获得焦点以接收输入法输入
         isFocusable = true
         isFocusableInTouchMode = true

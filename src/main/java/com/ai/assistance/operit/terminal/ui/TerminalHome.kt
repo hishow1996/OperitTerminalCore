@@ -180,7 +180,8 @@ fun TerminalHome(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .imePadding() // 让整个列随软键盘上移
+                    .background(Color.Black)
+                    .imePadding()
             ) {
                 // 终端输出区域
                 CanvasTerminalScreen(
@@ -205,6 +206,7 @@ fun TerminalHome(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .background(Color.Black)
                     .imePadding()
             ) {
                 AndroidView(
@@ -303,6 +305,7 @@ fun TerminalHome(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .background(Color.Black)
                             .padding(padding),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
