@@ -198,15 +198,9 @@ fun TerminalHome(
             }
         } else {
             Column(
-                modifier = if (isDirectInputMode) {
-                    // 模式 A：非全屏直接发送模式，跟随 IME 自动调整可见区域
-                    Modifier
-                        .fillMaxSize()
-                        .imePadding()
-                } else {
-                    // 模式 B：普通输入框模式，不使用 imePadding 策略
-                    Modifier.fillMaxSize()
-                }
+                modifier = Modifier
+                    .fillMaxSize()
+                    .imePadding()
             ) {
                 // Canvas输出区域（占满剩余空间）
                 if (isDirectInputMode) {
