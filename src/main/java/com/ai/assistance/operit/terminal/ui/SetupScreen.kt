@@ -187,25 +187,22 @@ fun SetupScreen(
             packageStatus[pkg.id] = InstallStatus.CHECKING
         }
 
-        // 并发检查所有包
-        allPackages.forEach { pkg ->
-            launch {
-                val isInstalled = checkPackageInstalled(terminalManager, sessionId, pkg, this)
-                if (isInstalled) {
-                    packageStatus[pkg.id] = InstallStatus.INSTALLED
-                    selectedPackages[pkg.id] = true
-                } else {
-                    packageStatus[pkg.id] = InstallStatus.NOT_INSTALLED
-                }
+        // 串行检查所有包（避免并发导致命令输出混乱）
+        for (pkg in allPackages) {
+            val isInstalled = checkPackageInstalled(terminalManager, sessionId, pkg, this)
+            if (isInstalled) {
+                packageStatus[pkg.id] = InstallStatus.INSTALLED
+                selectedPackages[pkg.id] = true
+            } else {
+                packageStatus[pkg.id] = InstallStatus.NOT_INSTALLED
+            }
 
-                // 检查是否需要更新分类的全选状态
-                val category = packageCategories.find { c -> c.packages.any { it.id == pkg.id } }
-                category?.let { cat ->
-                    val allInCategoryFinishedChecking = cat.packages.all { p -> packageStatus[p.id] != InstallStatus.CHECKING }
-                    if (allInCategoryFinishedChecking) {
-                        val allInCategorySelected = cat.packages.all { p -> selectedPackages[p.id] == true }
-                        categorySelectAll[cat.id] = allInCategorySelected
-                    }
+            val category = packageCategories.find { c -> c.packages.any { it.id == pkg.id } }
+            category?.let { cat ->
+                val allInCategoryFinishedChecking = cat.packages.all { p -> packageStatus[p.id] != InstallStatus.CHECKING }
+                if (allInCategoryFinishedChecking) {
+                    val allInCategorySelected = cat.packages.all { p -> selectedPackages[p.id] == true }
+                    categorySelectAll[cat.id] = allInCategorySelected
                 }
             }
         }
