@@ -241,6 +241,7 @@ fun TerminalHome(
                 // 终端工具栏
                 TerminalToolbar(
                     onInterrupt = env::onInterrupt,
+                    onEnter = { env.onSendInput("\r", false) },
                     onSendCommand = { env.onSendInput(it, true) },
                     fontSize = fontSize * 0.8f,
                     padding = padding,
@@ -527,6 +528,7 @@ private fun SessionTab(
 @Composable
 private fun TerminalToolbar(
     onInterrupt: () -> Unit,
+    onEnter: () -> Unit,
     onSendCommand: (String) -> Unit,
     fontSize: androidx.compose.ui.unit.TextUnit,
     padding: androidx.compose.ui.unit.Dp,
@@ -571,6 +573,22 @@ private fun TerminalToolbar(
                         fontSize = fontSize * 0.9f
                     )
                 }
+            }
+
+            // Enter 按钮
+            Surface(
+                modifier = Modifier.clickable { onEnter() },
+                color = Color(0xFF4A4A4A),
+                shape = RoundedCornerShape(6.dp)
+            ) {
+                Text(
+                    text = "Enter",
+                    color = Color.White,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = fontSize,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = padding * 0.75f, vertical = padding * 0.4f)
+                )
             }
 
             // 分隔线
