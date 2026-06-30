@@ -124,7 +124,7 @@ fun TerminalHome(
             delay(200)
             val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
             imm?.showSoftInput(rootView, InputMethodManager.SHOW_FORCED)
-            isImeVisible = true
+            imeShown = true
         }
     }
 
@@ -141,7 +141,7 @@ fun TerminalHome(
     // 非全屏模式下虚拟键盘显示状态
     var showVirtualKeyboard by remember { mutableStateOf(false) }
     var isDirectInputMode by remember { mutableStateOf(false) }
-    var isImeVisible by remember { mutableStateOf(false) }
+    var imeShown by remember { mutableStateOf(false) }
     var terminalViewRef by remember { mutableStateOf<CanvasTerminalView?>(null) }
 
     // 计算基于缩放因子的字体大小和间距
@@ -216,7 +216,7 @@ fun TerminalHome(
                             setSessionScrollCallbacks(env.currentSessionId, { id, offset -> env.saveScrollOffset(id, offset) }, { id -> env.getScrollOffset(id) })
                             setFullscreenMode(false)
                             setOnRequestShowKeyboard {
-                                isImeVisible = true
+                                imeShown = true
                                 inputFocusRequester.requestFocus()
                                 pendingShowIme = true
                             }
@@ -244,7 +244,7 @@ fun TerminalHome(
                             view.setFullscreenMode(false)
                             view.setInputCallback { }
                             view.setOnRequestShowKeyboard {
-                                isImeVisible = true
+                                imeShown = true
                                 inputFocusRequester.requestFocus()
                                 pendingShowIme = true
                             }
@@ -265,16 +265,16 @@ fun TerminalHome(
                         onExitDirectMode = {
                             isDirectInputMode = false
                             showVirtualKeyboard = false
-                            isImeVisible = false
+                            imeShown = false
                         },
                         onToggleIme = {
                             val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                            if (isImeVisible) {
-                                isImeVisible = false
+                            if (imeShown) {
+                                imeShown = false
                                 keyboardController?.hide()
                                 imm?.hideSoftInputFromWindow(rootView.windowToken, 0)
                             } else {
-                                isImeVisible = true
+                                imeShown = true
                                 val tv = terminalViewRef
                                 if (tv != null) {
                                     tv.requestFocus()
@@ -343,13 +343,13 @@ fun TerminalHome(
                             modifier = Modifier
                                 .padding(start = padding * 0.5f)
                                 .clickable {
-                                    if (isImeVisible) {
-                                        isImeVisible = false
+                                    if (imeShown) {
+                                        imeShown = false
                                         keyboardController?.hide()
                                         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                                         imm?.hideSoftInputFromWindow(rootView.windowToken, 0)
                                     } else {
-                                        isImeVisible = true
+                                        imeShown = true
                                         inputFocusRequester.requestFocus()
                                         pendingShowIme = true
                                     }
