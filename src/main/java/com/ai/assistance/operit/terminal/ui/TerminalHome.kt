@@ -202,34 +202,35 @@ fun TerminalHome(
                     .fillMaxSize()
                     .imePadding()
             ) {
-                // Canvas输出区域（占满剩余空间）
-                if (isDirectInputMode) {
-                    // 直接输入模式：使用与全屏相同的 CanvasTerminalScreen，点击画布时由 CanvasTerminalView 自己弹出输入法
-                    CanvasTerminalScreen(
-                        emulator = env.terminalEmulator,
-                        modifier = Modifier.weight(1f),
-                        config = fontConfig,
-                        pty = currentPty,
-                        onInput = { env.onSendInput(it, false) },
-                        sessionId = env.currentSessionId,
-                        onScrollOffsetChanged = { id, offset -> env.saveScrollOffset(id, offset) },
-                        getScrollOffset = { id -> env.getScrollOffset(id) }
-                    )
-                } else {
-                    // 普通命令模式：只显示输出，点击画布时把焦点切到命令输入框并弹出输入法
-                    CanvasTerminalOutput(
-                        emulator = env.terminalEmulator,
-                        modifier = Modifier.weight(1f),
-                        config = fontConfig,
-                        pty = currentPty,
-                        onRequestShowKeyboard = {
-                            inputFocusRequester.requestFocus()
-                            pendingShowIme = true
-                        },
-                        sessionId = env.currentSessionId,
-                        onScrollOffsetChanged = { id, offset -> env.saveScrollOffset(id, offset) },
-                        getScrollOffset = { id -> env.getScrollOffset(id) }
-                    )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(Color.Black)
+                ) {
+                    if (isDirectInputMode) {
+                        CanvasTerminalScreen(
+                            emulator = env.terminalEmulator,
+                            config = fontConfig,
+                            pty = currentPty,
+                            onInput = { env.onSendInput(it, false) },
+                            sessionId = env.currentSessionId,
+                            onScrollOffsetChanged = { id, offset -> env.saveScrollOffset(id, offset) },
+                            getScrollOffset = { id -> env.getScrollOffset(id) }
+                        )
+                    } else {
+                        CanvasTerminalOutput(
+                            emulator = env.terminalEmulator,
+                            config = fontConfig,
+                            pty = currentPty,
+                            onRequestShowKeyboard = {
+                                inputFocusRequester.requestFocus()
+                                pendingShowIme = true
+                            },
+                            sessionId = env.currentSessionId,
+                            onScrollOffsetChanged = { id, offset -> env.saveScrollOffset(id, offset) },
+                            getScrollOffset = { id -> env.getScrollOffset(id) }
+                        )
+                    }
                 }
                 
                 // 终端工具栏
@@ -317,14 +318,18 @@ fun TerminalHome(
                             .clickable {
                                 isDirectInputMode = !isDirectInputMode
                                 if (isDirectInputMode) {
-                                    // 进入直接输入模式：展开虚拟键盘，清空命令并收起系统键盘
                                     showVirtualKeyboard = true
                                     env.onCommandChange("")
-                                    keyboardController?.hide()
+                                    coroutineScope.launch {
+                                        delay(200)
+                                        keyboardController?.hide()
+                                    }
                                 } else {
-                                    // 退出直接输入模式：关闭虚拟键盘面板并恢复系统键盘
                                     showVirtualKeyboard = false
-                                    keyboardController?.show()
+                                    coroutineScope.launch {
+                                        delay(200)
+                                        keyboardController?.show()
+                                    }
                                 }
                             },
                         color = if (isDirectInputMode) Color(0xFF4A4A4A) else Color(0xFF3A3A3A),
