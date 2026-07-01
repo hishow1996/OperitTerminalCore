@@ -56,7 +56,6 @@ import com.ai.assistance.operit.terminal.view.canvas.CanvasTerminalView
 import android.view.MotionEvent
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
@@ -116,19 +115,11 @@ fun TerminalHome(
 
     // 命令输入框焦点控制
     val inputFocusRequester = remember { FocusRequester() }
-    var pendingShowIme by remember { mutableStateOf(false) }
+
     var imeShown by remember { mutableStateOf(false) }
     var terminalViewRef by remember { mutableStateOf<CanvasTerminalView?>(null) }
 
-    LaunchedEffect(pendingShowIme) {
-        if (pendingShowIme) {
-            pendingShowIme = false
-            delay(200)
-            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-            imm?.showSoftInput(rootView, InputMethodManager.SHOW_FORCED)
-            imeShown = true
-        }
-    }
+
 
     // 语法高亮
     val visualTransformation = remember { SyntaxHighlightingVisualTransformation() }
@@ -220,7 +211,7 @@ fun TerminalHome(
                             setOnRequestShowKeyboard {
                                 imeShown = true
                                 inputFocusRequester.requestFocus()
-                                pendingShowIme = true
+                                keyboardController?.show()
                             }
                             setOnTouchListener { v, event ->
                                 when (event.action) {
@@ -248,7 +239,7 @@ fun TerminalHome(
                             view.setOnRequestShowKeyboard {
                                 imeShown = true
                                 inputFocusRequester.requestFocus()
-                                pendingShowIme = true
+                                keyboardController?.show()
                             }
                         }
                     },
@@ -276,13 +267,13 @@ fun TerminalHome(
                                 keyboardController?.hide()
                                 imm?.hideSoftInputFromWindow(rootView.windowToken, 0)
                             } else {
-                                imeShown = true
                                 val tv = terminalViewRef
                                 if (tv != null) {
                                     tv.requestFocus()
-                                    tv.postDelayed({
+                                    tv.post {
                                         imm?.showSoftInput(tv, InputMethodManager.SHOW_FORCED)
-                                    }, 200)
+                                    }
+                                    imeShown = true
                                 }
                             }
                         },
@@ -352,9 +343,9 @@ fun TerminalHome(
                                         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                                         imm?.hideSoftInputFromWindow(rootView.windowToken, 0)
                                     } else {
-                                        imeShown = true
                                         inputFocusRequester.requestFocus()
-                                        pendingShowIme = true
+                                        keyboardController?.show()
+                                        imeShown = true
                                     }
                                 },
                             color = Color(0xFF3A3A3A),
